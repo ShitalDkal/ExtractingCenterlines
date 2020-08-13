@@ -1,0 +1,75 @@
+#Extract centerline between two other centerline
+
+import arcpy, string, os, sys, datetime
+
+centerline=r"Your Feature Dataset Path"
+outFC=r"Feature Dataset Path"
+
+if arcpy.Exists(outFC):
+    arcpy.Delete_management(outFC)
+arcpy.CreateFeatureclass_management(r"Your database", "MoratoriumStreets", "POLYLINE", "", "", "", centerline)
+arcpy.AddField_management(outFC, "ROWNUMBER", "SHORT", "", "", "", "Row ID")
+arcpy.AddField_management(outFC, "DESCRIPTION", "TEXT", "", "", "100", "Description")
+arcpy.AddField_management(outFC, "COMPLETIONDATE", "DATE", "", "", "", "Completion Date")
+arcpy.AddField_management(outFC, "EXPIRATIONDATE", "DATE", "", "", "", "Expiration Date")
+
+
+cwd=sys.path[0] #looks in the directory for the module?
+xlFile=os.path.join(cwd,"MoratoriumList.xlsx")
+arcpy.ExcelToTable_conversion(xlFile,r"in_memory\Streets","Streets")
+arcpy.MakeTableView_management(r"in_memory\Streets","Streets_View") #creates a temp table view
+arcpy.MakeFeatureLayer_management(centerline,"centerline_Lyr") #Creates a temp feature layer from input
+
+ctr=1
+cursor=arcpy.SearchCursor("Streets_View") #Used to establish a read-only cursor for iteration and extraction of value
+
+row=cursor.next()
+while row: 
+    row_ID = row.getValue("RowNumber")
+    StreetSegment = row.getValue("StreetSegment")
+    CompletionDate = row.getValue("DateOfCompletion")
+    CompletionDate_formatted = "\'" + CompletionDate.strftime("%d") + "/" + CompletionDate.strftime("%m") + "/" + CompletionDate.strftime("%Y") + "\'"
+    ExpirationDate = row.getValue("Expiration")
+    ExpirationDate_formatted = "\'" + ExpirationDate.strftime("%d") + "/" + ExpirationDate.strftime("%m") + "/" + ExpirationDate.strftime("%Y") + "\'"
+    qry = "FULLNAME = \'" + StreetSegment + "\'"
+    arcpy.SelectLayerByAttribute_management("centerline_Lyr", "NEW_SELECTION", qry)
+    if str(arcpy.GetCount_management("centerline_Lyr")) != '0':
+        arcpy.Dissolve_management("centerline_Lyr", r"in_memory\centerline_dis_" + str(ctr), "FULLNAME", "", "SINGLE_PART")
+        from_Street = row.getValue("FromStreet")
+        from_qry = "FULLNAME = \'" + from_Street + "\'"
+        arcpy.SelectLayerByAttribute_management("centerline_Lyr", "NEW_SELECTION", from_qry)
+        if str(arcpy.GetCount_management("centerline_Lyr")) != '0':
+            arcpy.FeatureVerticesToPoints_management("centerline_Lyr", r"in_memory\From_Pts_" + str(ctr), "BOTH_ENDS")
+            to_Street = row.getValue("ToStreet")
+            to_qry = "FULLNAME = \'" + to_Street + "\'"
+            arcpy.SelectLayerByAttribute_management("centerline_Lyr", "NEW_SELECTION", to_qry)
+            if str(arcpy.GetCount_management("centerline_Lyr")) != '0':
+                arcpy.FeatureVerticesToPoints_management("centerline_Lyr", r"in_memory\To_Pts_" + str(ctr), "BOTH_ENDS")
+                from_to_qry = "FULLNAME = \'" + from_Street + "\' OR FULLNAME = \'" + to_Street + "\'"
+                arcpy.SelectLayerByAttribute_management("centerline_Lyr", "NEW_SELECTION", from_to_qry)
+                arcpy.FeatureVerticesToPoints_management("centerline_Lyr", r"in_memory\From_To_Pts_" + str(ctr), "BOTH_ENDS")
+                arcpy.SplitLineAtPoint_management(r"in_memory\centerline_dis_" + str(ctr), r"in_memory\From_To_Pts_" + str(ctr), r"in_memory\centerline_dis_split_" + str(ctr), "0 Feet")
+                arcpy.MakeFeatureLayer_management(r"in_memory\centerline_dis_split_" + str(ctr), "centerline_dis_split_Lyr_" + str(ctr))
+                arcpy.SelectLayerByLocation_management("centerline_dis_split_Lyr_" + str(ctr), "INTERSECT", r"in_memory\From_Pts_" + str(ctr), "", "NEW_SELECTION")
+                arcpy.SelectLayerByLocation_management("centerline_dis_split_Lyr_" + str(ctr), "INTERSECT", r"in_memory\To_Pts_" + str(ctr), "", "SUBSET_SELECTION")
+                arcpy.GeneratePointsAlongLines_management("centerline_dis_split_Lyr_" + str(ctr), r"in_memory\centerline_dis_split_pts" + str(ctr), "PERCENTAGE", Percentage=7)
+                arcpy.SelectLayerByLocation_management("centerline_Lyr", "INTERSECT", r"in_memory\centerline_dis_split_pts" + str(ctr), "0.05 Feet", "NEW_SELECTION")
+                Description = "\'" + (StreetSegment + "_" + from_Street + "_" + to_Street).replace(" ", "_") + "\'"
+                print "Copying the line segments.."
+                arcpy.CopyFeatures_management("centerline_Lyr", r"in_memory\Selection_" + str(ctr))
+                arcpy.AddField_management(r"in_memory\Selection_" + str(ctr), "ROWNUMBER", "SHORT", "", "", "", "Row ID")
+                arcpy.AddField_management(r"in_memory\Selection_" + str(ctr), "DESCRIPTION", "TEXT", "", "", "100", "Description")
+                arcpy.AddField_management(r"in_memory\Selection_" + str(ctr), "COMPLETIONDATE", "DATE", "", "", "100", "Completion Date")
+                arcpy.AddField_management(r"in_memory\Selection_" + str(ctr), "EXPIRATIONDATE", "DATE", "", "", "100", "Expiration Date")
+                arcpy.CalculateField_management(r"in_memory\Selection_" + str(ctr), "ROWNUMBER", row_ID, "PYTHON_9.3")
+                arcpy.CalculateField_management(r"in_memory\Selection_" + str(ctr), "DESCRIPTION", Description, "PYTHON_9.3")
+                arcpy.CalculateField_management(r"in_memory\Selection_" + str(ctr), "COMPLETIONDATE", CompletionDate_formatted, "PYTHON_9.3")
+                arcpy.CalculateField_management(r"in_memory\Selection_" + str(ctr), "EXPIRATIONDATE", ExpirationDate_formatted, "PYTHON_9.3")
+                arcpy.Append_management(r"in_memory\Selection_" + str(ctr), outFC, "NO_TEST")
+    else:
+        print "Cannot find " + qry
+
+    ctr+= 1
+    row = cursor.next()
+
+del cursor, row
